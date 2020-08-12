@@ -30,6 +30,7 @@ Map<String, dynamic> _devConfig = {
 Map<String, dynamic> _previewConfig = {
   CONFIG_SOCKET_HOST: "pro.trade.idefiex.com",
   CONFIG_SERVER_BASE_URL: "http://pro.trade.idefiex.com/",
+  CONFIG_WS_URL: "ws://test.trade.idefiex.com:9002/",
   CONFIG_QUOTE_BASE_URL: "http://pro.trade.idefiex.com/",
   CONFIG_WEB_BASE_URL: "http://pro.app.idefiex.com/",
 };
@@ -37,6 +38,7 @@ Map<String, dynamic> _previewConfig = {
 Map<String, dynamic> _prodConfig = {
   CONFIG_SOCKET_HOST: "trade.idefiex.com",
   CONFIG_SERVER_BASE_URL: "https://trade.idefiex.com/",
+  CONFIG_WS_URL: "ws://test.trade.idefiex.com:9002/",
   CONFIG_QUOTE_BASE_URL: "https://trade.idefiex.com/",
   CONFIG_WEB_BASE_URL: "https://app.idefiex.com/",
 };
@@ -76,6 +78,10 @@ class Config {
 
   static String getServerBaseUrl() {
     return _currentConfig[CONFIG_SERVER_BASE_URL];
+  }
+
+  static String getWSUrl() {
+    return _currentConfig[CONFIG_WS_URL];
   }
 
   static String getSocketHost() {

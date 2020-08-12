@@ -4,14 +4,13 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:ub_socket/retry.dart';
 import 'package:web_socket_channel/io.dart';
 
 import 'config.dart';
 import 'log_util.dart';
 import 'protocol.dart';
+import 'retry.dart';
 
 //------------------------同步命令号-----------------------------------
 
@@ -49,7 +48,6 @@ const int CMD_CLOSE_ORDER = 12003;
 ///自动平仓推送
 const int CMD_PUSH_AUTO_CLOSE_ORDER = 12501;
 
-
 //------------------------同步命令号-----------------------------------
 
 //------------------------推送命令号-----------------------------------
@@ -85,10 +83,10 @@ const int _kTokenExpired = 1 << 3;
 
 class DFSocket {
   //超过这个时间没有收到新包断开连接重连
-  static const int _MAX_RECEIVE_PACKET_INTERVAL_MILLISECONDS = 30000;
+  static const int _MAX_RECEIVE_PACKET_INTERVAL_MILLISECONDS = 16000;
 
   //心跳包发送间隔时间
-  static const int _HEARTBEAT_INTERVAL_MILLISECONDS = 15000;
+  static const int _HEARTBEAT_INTERVAL_MILLISECONDS = 8000;
 
   static const int _SEQ_HEARTBEAT = 0;
 
@@ -96,19 +94,14 @@ class DFSocket {
 
   int _flags = 0;
 
-  Socket _socket;
   IOWebSocketChannel _channel;
-  StreamSubscription<List<int>> _subscription;
-  List<int> _buffer = List();
-  Packet _currentPacket;
+  var _subscription;
   var _fragmentMap = Map<int, List<Packet>>();
 
-  String host = Config.getSocketHost();
-  int port = 9001;
+  String url = Config.getWSUrl();
   Map<String, dynamic> loginParams;
 
   bool reconnectionEnabled = true;
-  Duration timeout = const Duration(seconds: 15);
 
   Timer _heartbeatTimer, _connectCheckerTimer;
 
@@ -124,32 +117,43 @@ class DFSocket {
 
   int get flag => _flags;
 
-  DFSocket() {
-//    packetStream().where((p) => p.wCmd == CMD_LOGIN).listen((packet) {
-//      this._flags |= _kConnectAuthenticated;
-//
-//      //连接成功并且接收到登陆包以后对外发送socket连接成功的状态
-//      _connectStatusStreamController.add(true);
-//    });
-//    packetStream().listen((packet) {
-//      _lastReceivePacketTime = DateTime.now();
-//      _debug("receive last packet time: " + _lastReceivePacketTime.toString());
-//    });
-  }
+  bool get connected => (_flags & _kConnected) != 0 && (_flags & _kConnectAuthenticated) != 0;
 
   Future<Packet> connect(Map<String, dynamic> loginParams,
-      {Duration timeout = const Duration(seconds: 30), reconnectionEnabled = false}) async {
+      {Duration timeout = const Duration(seconds: 15), reconnectionEnabled = false}) async {
     try {
-      disconnect();
-      var url = Config.getConfig(CONFIG_WS_URL);
+      if (reconnectionEnabled) {
+        this.loginParams = loginParams;
+      }
+
+      await disconnect(notify: false);
       _info('connect $url');
 
       _channel = IOWebSocketChannel.connect(url);
-      await _channel.stream.first.timeout(timeout);
-      await _didConnect(url, loginParams);
-      var packet = await _request(CMD_LOGIN, params: loginParams, seq: _SEQ_LOGIN);
+      Completer<Packet> completer = Completer<Packet>();
+      _subscription = _channel.stream.map((event) => Packet.fromBuffer(event)).handleError((e) {
+        _closeWithError(e);
+      }).listen((packet) {
+        if (packet.cmd != CMD_HEARTBEAT
+        //&& packet.wCmd != CMD_PUSH_QUOTE
+        ) {
+          _info("receive ${packet.toString()}");
+        }
+        if (packet.cmd == 8888) {
+          completer.complete(packet);
+        }
+        _dispatch(packet);
+      });
+      _sendPacket(Packet(8888, _SEQ_LOGIN, loginParams));
 
-      var json = packet.toJson();
+      var packet = await completer.future.timeout(timeout);
+
+      _info("connect success");
+      this.loginParams = loginParams;
+      this._flags |= _kConnected;
+      _lastReceivePacketTime = null;
+
+      var json = packet.data;
       if (CODE_ERROR_TOKEN_EXPIRED.toString() != getResCode(json)) {
         this._flags &= ~_kTokenExpired;
       }
@@ -163,7 +167,7 @@ class DFSocket {
       return packet;
     } catch (e) {
       _info("connect error: " + e.toString());
-      //disconnect();
+      await disconnect(notify: false);
       rethrow;
     }
   }
@@ -171,24 +175,21 @@ class DFSocket {
   void connectUtilSuccess(Map<String, dynamic> loginParams) {
     final r = RetryOptions(maxAttempts: double.maxFinite.toInt(), maxDelay: const Duration(seconds: 3));
     r.retry(() async {
-      await connect(loginParams, reconnectionEnabled: true);
+      try {
+        await connect(loginParams, reconnectionEnabled: true);
+//        reconnectionEnabled = true;
+//        unbindConnectChecker();
+      } catch (e) {
+        print(e);
+      }
     });
   }
 
-  void disconnect({unbindConnectChecker = false}) async {
+  Future<void> disconnect({unbindConnectChecker = false, notify: true}) async {
     _info('disconnect');
-
-    try {
-      await this._channel?.sink?.close();
-    } catch (e) {
-      LogUtil.v(e);
-      //do nothing
-    }
 
     this._channel = null;
     //this._flags = 0;
-    this._currentPacket = null;
-    this._buffer.clear();
     this._fragmentMap.clear();
 
     if (_subscription != null) {
@@ -204,13 +205,17 @@ class DFSocket {
       this._heartbeatTimer.cancel();
     }
 
-    _flags &= ~_kConnected;
-    _flags &= ~_kConnectAuthenticated;
-    _connectStatusStreamController.add(false);
+    var connected = (_flags & _kConnected) != 0;
 
-    // || (this._flags & _kReconnecting) == 0
+    this._flags &= ~_kConnected;
+    this._flags &= ~_kConnectAuthenticated;
+
     if (unbindConnectChecker) {
-      unbindConnectChecker();
+      this.unbindConnectChecker();
+    }
+    if (connected && notify) {
+      _connectStatusStreamController.add(false);
+      _info('call connectStatusChanged: false');
     }
   }
 
@@ -242,7 +247,7 @@ class DFSocket {
     _connectCheckerTimer = null;
   }
 
-  Future<Map<String, dynamic>> request(int command, { Map<String, dynamic> params, timeoutSeconds = 15, int seq }) {
+  Future<Map<String, dynamic>> request(int command, { Map<String, dynamic> params, timeoutSeconds = 8, int seq }) {
     if (command == CMD_LOGIN) {
       throw Exception('Login is a restricted operation');
     }
@@ -272,8 +277,19 @@ class DFSocket {
   StreamSubscription<Packet> subscribe(void onData(Packet packet),
       {int command}) {
     return packetStream()
-        .where((packet) => command == null || packet.wCmd == command)
+        .where((packet) => command == null || packet.cmd == command)
         .listen(onData);
+  }
+
+  void setTokenExpired() {
+//    if (this._flags & _kTokenExpired == 0) {
+//      print("liubing:--------"+ "2");
+    tokenExpiredCallback();
+//      print("liubing:--------"+ "4");
+//    } else {
+//      print("liubing:--------"+ "3");
+//    }
+    this._flags |= _kTokenExpired;
   }
 
   Future<Packet> _request(int command, { Map<String, dynamic> params, int seq }) {
@@ -292,7 +308,7 @@ class DFSocket {
     //收到登陆包之前不允许发别的包
     if (command != CMD_LOGIN && (this._flags & _kConnectAuthenticated) == 0) {
       return packetStream()
-          .where((p) => p.wCmd == CMD_LOGIN)
+          .where((p) => p.cmd == CMD_LOGIN)
           .first.then((value) {
         try {
           _sendPacket(requestPacket);
@@ -300,7 +316,7 @@ class DFSocket {
           return Future.error(e);
         }
         return packetStream()
-            .where((p) => p.wCmd == command && p.wSeq == requestPacket.wSeq)
+            .where((p) => p.cmd == command && p.seq == requestPacket.seq)
             .first;
       });
     } else {
@@ -310,7 +326,7 @@ class DFSocket {
         return Future.error(e);
       }
       return packetStream()
-          .where((p) => p.wCmd == command && p.wSeq == requestPacket.wSeq)
+          .where((p) => p.cmd == command && p.seq == requestPacket.seq)
           .first;
     }
   }
@@ -322,37 +338,19 @@ class DFSocket {
     if (packet == null) {
       return;
     }
-    _info("send ${packet.toString()}");
-    if (_socket == null) {
+    if (_channel == null || _channel.sink == null) {
       return;
     }
-    _socket.add(packet.toBytes());
-  }
 
-  Future<void> _didConnect(String url, Map<String, dynamic> loginParams) async {
-    _info("connect success");
+    var content = {
+      'cmd': packet.cmd.toString(),
+      'seq': packet.seq.toString(),
+      'data': packet.data ?? {},
+    };
 
-    this._flags |= _kConnected;
-
-    this.host = host;
-    this.loginParams = loginParams;
-
-    _lastReceivePacketTime = null;
-
-    _subscription = _channel.stream.handleError((e) {
-      _closeWithError(e);
-    }).listen((buffer) {
-      var str = utf8.decode(buffer);
-      var json = jsonDecode(str);
-      var cmd = json['cmd'];
-      var seq = json['seq'];
-      var data = json['data'];
-      var packet = Packet.fromData(cmd, seq, data);
-      _dispatch(packet);
-    });
-    _subscription.onError((error) {
-      _debug('_subscription onError');
-    });
+    String str = jsonEncode(content);
+    _info("send packet: $str");
+    _channel.sink.add(str);
   }
 
   void _triggerReconnect() {
@@ -367,21 +365,16 @@ class DFSocket {
     _debug("_triggerReconnect, flag: ${this._flags}");
 
     this._flags |= _kReconnecting;
-//    disconnect();
-//
-//    if ((_flags & _kConnected) != 0 && (_flags & _kConnectAuthenticated) != 0) {
-//      return;
-//    }
     _debug('start reconnect, this.flags: ${this._flags}');
     var reconnectTimes = 1;
     final r = RetryOptions(maxAttempts: double.maxFinite.toInt(), maxDelay: const Duration(seconds: 3));
     r.retry(() async {
-      _debug("trigger reconnect, times: ${reconnectTimes++}");
+      _info("trigger reconnect, times: ${reconnectTimes++}");
       await _reconnect();
     });
   }
 
-  void _reconnect() async {
+  Future<void> _reconnect() async {
     _info("reconnect ...");
 
     if (loginParams == null) {
@@ -400,13 +393,7 @@ class DFSocket {
   }
 
   void _dispatch(Packet packet) {
-    if (packet.wCmd != CMD_HEARTBEAT
-    //&& packet.wCmd != CMD_PUSH_QUOTE
-    ) {
-      _info("receive ${packet.toString()}");
-    }
-
-    var json = packet.toJson();
+    var json = packet.data;
     /**
      * {
      *    code: 0,
@@ -427,7 +414,7 @@ class DFSocket {
           info[PROTOCOL_KEY_MSG] = msg;
         }
         json = info;
-        packet.body = utf8.encode(jsonEncode(json));
+        packet.data = json;
       }
     }
     if (CODE_ERROR_TOKEN_EXPIRED.toString() == code) {
@@ -441,24 +428,14 @@ class DFSocket {
     _lastReceivePacketTime = DateTime.now();
     _debug("receive last packet time: " + _lastReceivePacketTime.toString());
 
-    if (packet.wCmd == CMD_LOGIN) {
+    if (packet.cmd == CMD_LOGIN) {
       this._flags |= _kConnectAuthenticated;
       //连接成功并且接收到登陆包以后对外发送socket连接成功的状态
+      _info('call connectStatusChanged: true');
       _connectStatusStreamController.add(true);
     }
     //对外分发
     _packetStreamController.add(packet);
-  }
-
-  void setTokenExpired() {
-//    if (this._flags & _kTokenExpired == 0) {
-//      print("liubing:--------"+ "2");
-    tokenExpiredCallback();
-//      print("liubing:--------"+ "4");
-//    } else {
-//      print("liubing:--------"+ "3");
-//    }
-    this._flags |= _kTokenExpired;
   }
 
   void _closeWithError(Exception e) {
@@ -495,94 +472,41 @@ class Packet {
     return _CURRENT_SERIAL_NUMBER++;
   }
 
-  //开始标记
-  int bStartFlag = START_FLAG;
-
-  //版本号
-  int bVer;
-
-  //压缩标识 '0' 表示不压缩 '1'-gzip '2'-zlib
-  int bEncryptFlag;
-
-  //1是分片的包
-  int bFrag;
-
-  //报文长度
-  int wLen;
-
   //命令号
-  int wCmd;
+  int cmd;
 
   //包序列包(用来关联请求和响应的关联)
-  int wSeq;
-
-  //校验和
-  int wCrc;
-
-  //会话ID
-  int dwSID;
-
-  //包分片的个数
-  int wTotal;
-
-  //分片的索引
-  int wCurSeq;
-
-  List<int> body;
+  int seq;
 
   Map data;
 
-  dynamic addition;
-
   Packet(
-        this.wCmd,
-        this.wSeq,
+        this.cmd,
+        this.seq,
         this.data);
 
-  //从服务器写入到缓冲区的数据中解析报文体
-  void readBody(List<int> buffer) {
-    var len = this.wLen;
-    this.body = buffer.sublist(0, len - Packet.HEADER_SIZE);
-    buffer.removeRange(0, len - Packet.HEADER_SIZE);
-  }
-  }
-
-  //分片的索引
-  int getFragmentIndex() {
-    return this.wCurSeq;
-  }
-
-  List<int> toBytes() {
-    var bytes = List<int>();
-    bytes.add(bStartFlag);
-    bytes.add(bVer);
-    bytes.add(bEncryptFlag);
-    bytes.add(bFrag);
-
-    bytes.addAll(body);
-    return bytes;
-  }
-
-  String utf8body() {
-    return utf8.decode(body != null ? body : List<int>());
-  }
-
   Map<String, dynamic> toJson() {
-    return jsonDecode(utf8body());
+    return data;
   }
 
   @override
   String toString() {
-    return 'Packet{cmd: $wCmd, seq: $wSeq, body: ${utf8body()}}';
+    return 'Packet{cmd: $cmd, seq: $seq, body: $data}';
   }
 
   static Packet fromData(int command, int seq, Map data) {
     return Packet(command, seq, data);
   }
+
+  static Packet fromBuffer(buffer) {
+    String str = utf8.decode(buffer);
+    var map = jsonDecode(str);
+    return Packet(map['cmd'], map['seq'], map['data']);
+  }
 }
 
 void _info(String log) {
-  LogUtil.v(log);
+  LogUtil.v(log, tag: 'DFSocket');
 }
 
 void _debug(String log) {

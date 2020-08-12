@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:intl/intl.dart';
 import 'package:web_socket_channel/io.dart';
 
 class DFWebsocket {
@@ -22,19 +23,37 @@ class DFWebsocket {
     });
     //channel.sink.add('{"cmd":"8888","seq":"1","data":{}}');
 
+//    var params = {
+//      'sub': [{
+//        'symbol': 'btc',
+//        'datatype': ['1seck']
+//      }],
+//      'unsub': [{
+//        'symbol': 'btc',
+//        'datatype': ['1seck']
+//      }],
+//    };
+//
+//    var content = {
+//      'cmd': '13007',
+//      'seq': '2',
+//      'data': params,
+//    };
+//    channel.sink.add(jsonEncode(content));
+
     var params = {
-      'sub': [{
-        'symbol': 'btc',
-        'datatype': ['1seck']
-      }],
-      'unsub': [{
-        'symbol': 'btc',
-        'datatype': ['1seck']
-      }],
+      'deviceid': "test1",
+      'clientversion': "1",
+      'visit': 1,
+      'username': 'test1'
     };
+    params['clienttype'] = 2;
+
+    var formatter = new DateFormat('yyyy-MM-dd HH:mm:ss.S');
+    params['time'] = formatter.format(DateTime.now());
 
     var content = {
-      'cmd': '13007',
+      'cmd': '8888',
       'seq': '2',
       'data': params,
     };
