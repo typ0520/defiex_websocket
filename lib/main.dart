@@ -1,8 +1,9 @@
-import 'package:defiex_websocket/ws.dart';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+
+import 'dfsocket/socket.dart';
 
 void main() => runApp(MyApp());
 
@@ -34,12 +35,12 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   TextEditingController _controller = TextEditingController();
 
-  DFWebsocket ws;
+  DFSocket ws;
+
   @override
   void initState() {
     super.initState();
-    ws = DFWebsocket();
-    ws.start();
+    ws = DFSocket();
   }
 
   @override
@@ -53,20 +54,26 @@ class _MyHomePageState extends State<MyHomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            Form(
-              child: TextFormField(
-                controller: _controller,
-                decoration: InputDecoration(labelText: 'Send a message'),
-              ),
-            ),
-            StreamBuilder(
-              stream: widget.channel.stream,
-              builder: (context, snapshot) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 24.0),
-                  child: Text(snapshot.hasData ? '${snapshot.data}' : ''),
-                );
-              },
+            Wrap(
+              spacing: 10,
+              children: [
+                RaisedButton(
+                  onPressed: () {
+                   //ws.start();
+                  },
+                  child: Text('连接'),
+                ),
+                RaisedButton(
+                  onPressed: () {
+                    int start = DateTime.now().millisecondsSinceEpoch;
+                    int now = DateTime.now().millisecondsSinceEpoch;
+                    while (now - start < 3000) {
+                      now = DateTime.now().millisecondsSinceEpoch;
+                    }
+                  },
+                  child: Text('延迟三秒'),
+                ),
+              ],
             )
           ],
         ),
