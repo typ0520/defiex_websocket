@@ -14,56 +14,57 @@ import 'retry.dart';
 
 //------------------------同步命令号-----------------------------------
 
-/*
- * 登录
- */
+/// 登录
 const int CMD_LOGIN = 8888;
 
-/*
- * 心跳
- */
+/// 心跳
 const int CMD_HEARTBEAT = 3101;
 
-/*
- * 行情快照
- */
+/// 行情快照
 const int CMD_GET_SNAPSHOT = 13001;
 
-/*
- * 现金购买
- */
+/// 现金购买
 const int CMD_CREATE_MARKET_ORDER_BY_CASH = 12001;
 
-/*
- * 赠金购买
- */
+/// 赠金购买
 const int CMD_CREATE_MARKET_ORDER_BY_ZJ = 12007;
 
-/*
- * 平仓
- */
+/// 平仓
 const int CMD_CLOSE_ORDER = 12003;
 
-///
-///自动平仓推送
-const int CMD_PUSH_AUTO_CLOSE_ORDER = 12501;
+/// 订阅
+const int CMD_QUOTE_SUBSCRIBE = 13007;
+
+/// 1/5/10/15/30秒级k线
+const int CMD_GET_SECK = 13012;
+
+/// 市价现金建仓
+const int CMD_BINARY_OPTION_CASH_BUY = 26001;
+
+/// 持仓单查询
+const int CMD_BINARY_OPTION_HOLD_ORDERS = 26101;
+
+/// 平仓单查询
+const int CMD_BINARY_OPTION_CLOSE_ORDERS = 26102;
 
 //------------------------同步命令号-----------------------------------
 
 //------------------------推送命令号-----------------------------------
 
-/*
- * 最新行情推送
- */
+/// 自动平仓推送
+const int CMD_PUSH_AUTO_CLOSE_ORDER = 12501;
+
+/// 行情推送
 const int CMD_PUSH_QUOTE = 13501;
 
-/*
- * 踢人
- */
+/// 踢人
 const int CMD_PUSH_LOGIN_CONFLICT = 11501;
 
 /// 限价单成交
 const int CMD_PUSH_LIMIT_ORDER_DEAL = 12506;
+
+/// 平仓信息推送
+const int CMD_PUSH_BINARY_OPTION_CLOSE_ORDER = 26501;
 
 //------------------------推送命令号-----------------------------------
 
@@ -232,6 +233,8 @@ class DFSocket {
         var dsize = currentMilliseconds - lastReceiveMilliseconds;
         _debug("check connect, time dsize: " + dsize.toString());
         if (lastReceiveMilliseconds != 0 && dsize > _MAX_RECEIVE_PACKET_INTERVAL_MILLISECONDS) {
+          _connectStatusStreamController.add(false);
+          _info('call connectStatusChanged: false');
           _debug("heartbeat timeout");
           _triggerReconnect();
         }
@@ -476,18 +479,35 @@ class Packet {
 
   Map data;
 
+  String text;
+
   Packet(
-        this.cmd,
-        this.seq,
-        this.data);
+    this.cmd,
+    this.seq,
+    this.data, {
+    this.text,
+  });
 
   Map<String, dynamic> toJson() {
     return data;
   }
 
+  Map<String, dynamic> toRequestContent() {
+    var content = {
+      'cmd': this.cmd,
+      'seq': this.seq,
+      'data': this.data,
+    };
+    return content;
+  }
+
+  String utf8body() {
+    return this.text ?? jsonEncode(data);
+  }
+
   @override
   String toString() {
-    return 'Packet{cmd: $cmd, seq: $seq, body: $data}';
+    return 'Packet{cmd: $cmd, seq: $seq, body: ${utf8body()}';
   }
 
   static Packet fromData(int command, int seq, Map data) {
@@ -495,9 +515,9 @@ class Packet {
   }
 
   static Packet fromBuffer(buffer) {
-    String str = utf8.decode(buffer);
-    var map = jsonDecode(str);
-    return Packet(map['cmd'], map['seq'], map['data']);
+    String text = utf8.decode(buffer);
+    var map = jsonDecode(text);
+    return Packet(map['cmd'], map['seq'], map['data'], text: text);
   }
 }
 
