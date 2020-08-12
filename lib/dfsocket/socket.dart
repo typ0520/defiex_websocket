@@ -459,15 +459,11 @@ class DFSocket {
 }
 
 class Packet {
-  static int HEADER_SIZE = 20;
-
-  static int START_FLAG = 0xFF;
-
-  static int _CURRENT_SERIAL_NUMBER = 2;
+  static int _CURRENT_SERIAL_NUMBER = 3;
 
   static int getAndIncreaseSerialNumber() {
     if (_CURRENT_SERIAL_NUMBER > 0xFFFFFF) {
-      _CURRENT_SERIAL_NUMBER = 1;
+      _CURRENT_SERIAL_NUMBER = 3;
     }
     return _CURRENT_SERIAL_NUMBER++;
   }
